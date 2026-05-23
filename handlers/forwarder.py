@@ -206,17 +206,29 @@ class ForwarderHandler:
 
     async def process_message(self, message: Message) -> None:
         """Called for every incoming message."""
+        chat_id = message.chat.id
+        topic_id: Optional[int] = getattr(message, "reply_to_top_message_id", None) or getattr(message, "message_thread_id", None) or getattr(message, "reply_to_message_id", None)
+        logger.info(f"📩 [New Event] Message {message.id} | Chat ID: {chat_id} | Topic ID: {topic_id or 0}")
+
+        # Service messages control
+        if self._is_service_message(message):
+            if not self.settings.FORWARD_SERVICE_MESSAGES:
+                logger.info(f"ℹ️ [Service Message] Ignored service message {message.id} in Chat {chat_id} (FORWARD_SERVICE_MESSAGES is disabled).")
+                return
+            logger.info(f"⚙️ [Service Message] Processing service message {message.id} (FORWARD_SERVICE_MESSAGES is enabled).")
+
         if not self._is_allowed_message(message):
+            logger.info(f"🚫 Message {message.id} filtered out by content/media whitelist or blacklist rules.")
             return
 
         # If part of a media group, buffer it — the buffer handles flushing
         if message.media_group_id:
+            logger.info(f"📦 Message {message.id} belongs to album {message.media_group_id}. Added to media group buffer.")
             await self.mg_buffer.add(message)
             return
 
-        chat_id = message.chat.id
-        topic_id: Optional[int] = getattr(message, "message_thread_id", None)
         routes = self._matched_routes(chat_id, topic_id, message)
+        logger.info(f"🔍 Route Matching for Message {message.id} inside Chat {chat_id} (Topic {topic_id or 0}): Found {len(routes)} active routes.")
 
         for route in routes:
             await self._dispatch(message, route)
@@ -224,9 +236,16 @@ class ForwarderHandler:
 
     async def process_edit(self, message: Message) -> None:
         """Sync edited messages to destination."""
+        chat_id = message.chat.id
+        topic_id: Optional[int] = getattr(message, "reply_to_top_message_id", None) or getattr(message, "message_thread_id", None)
+        logger.info(f"✏️ [Edit Event] Edited Message {message.id} | Chat ID: {chat_id} | Topic ID: {topic_id or 0}")
+
         matches = self.msg_map.get_all_routes(message.chat.id, message.id)
         if not matches:
+            logger.info(f"🔍 No forwarded mapping found for edited message {message.id} in Chat {message.chat.id}. Skipping edit sync.")
             return
+
+        logger.info(f"🔄 Syncing edit of Message {message.id} to {len(matches)} target destination(s)...")
 
         for route_id, dst_chat, dst_msg in matches:
             try:
@@ -282,7 +301,7 @@ class ForwarderHandler:
         # All messages are guaranteed to be from the same chat/topic
         first = messages[0]
         chat_id = first.chat.id
-        topic_id: Optional[int] = getattr(first, "message_thread_id", None)
+        topic_id: Optional[int] = getattr(first, "reply_to_top_message_id", None) or getattr(first, "message_thread_id", None) or getattr(first, "reply_to_message_id", None)
         routes = self._matched_routes(chat_id, topic_id, first)
 
         for route in routes:
@@ -371,13 +390,44 @@ class ForwarderHandler:
         """Forward a single message (copy or native forward mode)."""
         await self.rl.acquire()
         try:
-            if self.settings.FORWARD_MODE == "forward":
-                sent_list = await self.client.forward_messages(
+            if self._is_service_message(message):
+                text_notification = self._format_service_message(message)
+                reply_to = self._resolve_reply(message, route)
+                sent = await self.client.send_message(
                     chat_id=route.dest_chat_id,
-                    from_chat_id=message.chat.id,
-                    message_ids=message.id,
+                    text=text_notification,
+                    parse_mode=enums.ParseMode.MARKDOWN,
+                    reply_to_message_id=reply_to
                 )
-                sent = sent_list[0] if isinstance(sent_list, list) else sent_list
+            elif self.settings.FORWARD_MODE == "forward":
+                if route.dest_topic_id:
+                    peer = await self.client.resolve_peer(route.dest_chat_id)
+                    from_peer = await self.client.resolve_peer(message.chat.id)
+                    sent_messages = await self.client.invoke(
+                        raw.functions.messages.ForwardMessages(
+                            from_peer=from_peer,
+                            id=[message.id],
+                            random_id=[self.client.rnd_id()],
+                            to_peer=peer,
+                            top_msg_id=route.dest_topic_id,
+                        )
+                    )
+                    if sent_messages and getattr(sent_messages, "updates", None):
+                        for update in sent_messages.updates:
+                            if isinstance(update, (raw.types.UpdateNewMessage, raw.types.UpdateNewChannelMessage)):
+                                sent = await Message._parse(self.client, update.message)
+                                break
+                        else:
+                            sent = None
+                    else:
+                        sent = None
+                else:
+                    sent_list = await self.client.forward_messages(
+                        chat_id=route.dest_chat_id,
+                        from_chat_id=message.chat.id,
+                        message_ids=message.id,
+                    )
+                    sent = sent_list[0] if isinstance(sent_list, list) else sent_list
             else:
                 sent = await self._copy_message(message, route)
 
@@ -654,3 +704,46 @@ class ForwarderHandler:
                 return False
                 
         return True
+
+    def _is_service_message(self, message: Message) -> bool:
+        """Detect whether a message is a system service message (no normal content)."""
+        if message.service is not None:
+            return True
+        if message.empty:
+            return True
+        # If no standard text or media content exists, it is a service message
+        content_type = self._get_message_content_type(message)
+        if content_type == "other":
+            return True
+        return False
+
+    def _format_service_message(self, message: Message) -> str:
+        """Convert a service message into a human-readable text notification."""
+        chat_id = message.chat.id
+        topic_id = getattr(message, "reply_to_top_message_id", None) or getattr(message, "message_thread_id", None) or getattr(message, "reply_to_message_id", None)
+        topic_str = f" in Topic ID `{topic_id}`" if topic_id else ""
+
+        # Parse standard service types if populated
+        if message.service:
+            name = str(message.service)
+            if "NEW_CHAT_MEMBERS" in name:
+                members = message.new_chat_members or []
+                names = [m.first_name or f"User {m.id}" for m in members]
+                return f"👥 **{', '.join(names)}** joined the group{topic_str}."
+            if "LEFT_CHAT_MEMBERS" in name:
+                user = message.left_chat_member
+                name_str = user.first_name or f"User {user.id}" if user else "A member"
+                return f"🚶 **{name_str}** left the group{topic_str}."
+            if "PINNED_MESSAGE" in name:
+                p = message.pinned_message
+                sender = p.from_user.first_name if p and p.from_user else "Admin"
+                return f"📌 A message was pinned by **{sender}**{topic_str}."
+            if "NEW_CHAT_TITLE" in name:
+                return f"✏️ Group title was changed to: **{message.new_chat_title}**."
+            
+            # Fallback for other standard service actions
+            clean_name = name.split(".")[-1].replace("_", " ").title()
+            return f"⚙️ **{clean_name}** occurred{topic_str}."
+
+        # Fallback for unrecognized service messages (like forum topic actions)
+        return f"⚙️ System Action (Service Event) occurred{topic_str}."

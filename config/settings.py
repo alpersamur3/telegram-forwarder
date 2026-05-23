@@ -29,7 +29,11 @@ class Route:
             return False
         if self.source_topic_id is None:
             return True           # forward everything from this chat
-        return self.source_topic_id == (topic_id or 0)
+        
+        # General topic normalization: in Telegram forums, both 0/None and 1 represent the General topic.
+        src_norm = 1 if self.source_topic_id in (0, 1) else self.source_topic_id
+        incoming_norm = 1 if (topic_id or 0) in (0, 1) else topic_id
+        return src_norm == incoming_norm
 
 
 class Settings:
@@ -54,6 +58,7 @@ class Settings:
     # "forward"  → uses Telegram's native forward (shows "Forwarded from …")
     # "copy"     → sends a copy (no "Forwarded from" header, avoids some restrictions)
     FORWARD_MODE: str = os.getenv("FORWARD_MODE", "copy")
+    FORWARD_SERVICE_MESSAGES: bool = os.getenv("FORWARD_SERVICE_MESSAGES", "False").strip().lower() in ("true", "1", "yes")
 
     # ── Content filtering ───────────────────────────────────────────────────
     # Whitelist of allowed types (e.g. text, photo, video, document, animation, poll, sticker)

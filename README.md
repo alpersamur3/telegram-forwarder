@@ -21,6 +21,7 @@ Reads source chats without admin privileges (userbot mode).
 | **Reply chains** | Replies are correctly linked in the destination chat |
 | **Media groups** | Albums are forwarded intact using `send_media_group` |
 | **Persistent routes** | Forwarding rules are saved to `data/routes.json` |
+| **Service Messages** | Filter out or convert join/leave/pin/topic service messages to custom texts |
 
 ---
 
@@ -94,6 +95,8 @@ You can configure forwarding between channels, groups, and topics using the unif
    `/add -1001234567890:123 -1009876543210:456 bitcoin ethereum`
 
 > **Note:** To find a Topic ID, simply type `/chatid` inside that topic. The bot will automatically reply in your DM with both the Chat ID and the Topic ID.
+> 
+> **💡 General Topic Routing:** In Telegram forum groups, the default **"General"** topic has ID `1` (which is normalized seamlessly to ID `0` or `None` internally). Rota definitions using either `1` or `0` for the source topic will correctly forward messages sent in the General topic!
 
 ### Other Commands
 | Command | Alias | Description |
@@ -182,6 +185,11 @@ ALLOWED_MEDIA_TYPES=text,photo,video
 
 # Blacklist: Comma-separated list of blocked content types (empty = none blocked)
 BLOCKED_MEDIA_TYPES=sticker,poll
+
+# Service message forwarding (Anti-noise):
+# True  -> converts service messages (new member, pinned, topic open/close/create) to custom text notifications and forwards them
+# False -> completely ignores/filters out all service messages (default, recommended to prevent errors)
+FORWARD_SERVICE_MESSAGES=False
 ```
 
 ---

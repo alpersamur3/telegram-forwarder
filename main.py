@@ -129,7 +129,7 @@ async def main():
             f"Chat ID: `{chat.id}`",
         ]
 
-        topic_id = getattr(message, "message_thread_id", None)
+        topic_id = getattr(message, "reply_to_top_message_id", None) or getattr(message, "message_thread_id", None) or getattr(message, "reply_to_message_id", None)
         if topic_id:
             lines.append(f"Topic ID: `{topic_id}`")
 
@@ -176,7 +176,7 @@ async def main():
                 f"Chat ID: `{fwd.id}`",
             ]
             topic_id = getattr(message, "forward_from_message_id", None)
-            thread_id = getattr(message, "message_thread_id", None)
+            thread_id = getattr(message, "reply_to_top_message_id", None) or getattr(message, "message_thread_id", None) or getattr(message, "reply_to_message_id", None)
             if thread_id:
                 lines.append(f"Topic ID: `{thread_id}`")
             lines.append(f"\n💡 To add a route:")

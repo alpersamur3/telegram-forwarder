@@ -1,0 +1,3 @@
+pyrogram==2.0.106
+TgCrypto==1.2.5        # C extension — faster crypto, required by Pyrogram
+python-dotenv==1.0.1

@@ -413,9 +413,14 @@ class ForwarderHandler:
                         )
                     )
                     if sent_messages and getattr(sent_messages, "updates", None):
+                        users = {i.id: i for i in sent_messages.users}
+                        chats = {i.id: i for i in sent_messages.chats}
                         for update in sent_messages.updates:
                             if isinstance(update, (raw.types.UpdateNewMessage, raw.types.UpdateNewChannelMessage)):
-                                sent = await Message._parse(self.client, update.message)
+                                sent = await Message._parse(
+                                    self.client, update.message,
+                                    users, chats
+                                )
                                 break
                         else:
                             sent = None
